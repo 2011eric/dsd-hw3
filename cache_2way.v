@@ -33,37 +33,123 @@ module cache(
 
 //==== parameter definition ===============================
 parameter WAYS = 2;    
-parameter BLOCK_WIDTH = 128,
+parameter BLOCK_WIDTH = 128;
+parameter TAG_WIDTH = 25;
+parameter WORD_WIDTH = 32;
+parameter LINE_NUM = 8;
+localparam S_IDLE = 0, S_WB = 1, S_FETCH = 2;
+
 genvar gen_i;
+integer i;
 //==== wire/reg definition ================================
 reg                     wen_sets    [0:WAYS-1]; // write enable signal for each set
 reg                     update_sets [0:WAYS-1]; // updated valid signal
+wire                    hit_sets    [0:WAYS-1];
+wire                    dirty_sets    [0:WAYS-1];
+wire [TAG_WIDTH-1:0]    tag_sets    [0:WAYS-1];
+wire [WORD_WIDTH-1:0]   rdata_sets  [0:WAYS-1];
 reg                     valid_next; // updated valid bit
 reg                     dirty_next; // updated dirty bit
 reg                     input_src; // input source, 0: CPU, 1: memory
 reg  [BLOCK_WIDTH-1:0]  wdata;      // data written to cache line
+reg  [BLOCK_WIDTH-1:0]  rdata;      
+
+wire [2:0]                   index_i;
+reg  [1:0]              state_r, state_w;
+reg                     lru_lines_r [0:LINE_NUM-1], lru_lines_w   [0:LINE_NUM-1];      
+wire                    replace_sel;
+wire [WAYS-1:0]         hit_tmp;
+wire                    hit; // hit are ORed result from all the hit signal in each way
+wire                    dirty;
 //==== combinational circuit ==============================
+assign hit = |hit_tmp;
+assign index_i = proc_addr[4:2];
+assign replace_sel = lru_lines_r[index_i];
+assign dirty = dirty_sets[replace_sel];
 
+/* memory control signal */
+assign mem_read = (state_r == S_FETCH);
+assign mem_write = (state_r == S_WB);
+assign mem_addr = (state_r == S_WB) ? {tag_sets[replace_sel], index_i ,2'b0} : {proc_addr[29:2], 2'b0};
+
+always @(*) begin:state_logic
+    state_w = state_r
+    case (state_r)
+        S_IDLE: begin
+            if (proc_read || proc_write) begin
+                if (!hit) begin
+                    if (dirty) 
+                        state_w = S_WB;
+                    else
+                        state_w = S_FETCH;
+                end else begin
+                    state_w = S_IDLE;
+                end
+            end else begin
+                state_w = S_IDLE;
+            end
+        end
+        S_WB: begin
+            if (mem_ready) begin
+                state_w = S_FETCH;
+            end else begin
+                state_w = S_WB;
+            end
+        end
+        S_FETCH: begin
+
+        end
+    endcase
+
+
+end
+
+
+always @(*) begin:rdata_select
+    rdata = 0;
+    case (hit_tmp) 
+        2'b01: begin
+            rdata = rdata_sets[0];
+        2'b10: rdata = rdata_sets[1];
+    endcase
+end
+//TODO: change cache line output data width to 128 bit
+/* output signals */
+assign proc_rdata = rdata;
 //==== sequential circuit =================================
-
+always @(posedge clk) begin
+    if (proc_reset) begin
+        state_r <= S_IDLE;
+        for (i = 0;i < LINE_NUM; i = i + 1) begin
+            lru_lines_r[i] <= 0;
+        end
+    end else begin
+        state_r <= state_w;
+        for (i = 0;i < LINE_NUM; i = i + 1) begin
+            lru_lines_r[i] <= lru_lines_w[i];
+        end
+    end
+end
 
 generate
     for (gen_i = 0; gen_i < WAYS; gen_i = gen_i + 1)begin
         set u0(
             .clk(clk),
             .rst(proc_reset),
-            .write_i(),
-            .update_i(),
-            .valid_i(),
-            .dirty_i(),
-            .input_src_i(0),
-            .wdata_i(),
-            .addr_i(),
-            .hit_o(),
-            .rdata_o()
+            .write_i(wen_sets[gen_i]),
+            .update_i(update_sets[gen_i]),
+            .valid_i(valid_next),
+            .dirty_i(dirty_next),
+            .input_src_i(input_src),
+            .wdata_i(wdata),
+            .addr_i(proc_addr),
+            .dirty_o(dirty_sets[gen_i]),
+            .hit_o(hit_sets[gen_i]),
+            .tag_o(tag_sets[gen_i]),
+            .rdata_o(rdata_sets[gen_i])
         );
+        assign hit_tmp[gen_i] = hit_sets[gen_i];
     end
-
 endgenerate
 
 endmodule
@@ -83,8 +169,10 @@ module set #(
     input input_src_i, // input_src_i = 0: CPU, 1: memory
     input [BLOCK_WIDTH-1:0] wdata_i,
     input [29:0] addr_i;
+    output        dirty_o,
     output        hit_o, 
-    output [31:0] rdata_o
+    output [TAG_WIDTH-1:0] tag_o,
+    output [WORD_WIDTH-1:0] rdata_o
 );
 
 /* data read from cache line */
@@ -123,7 +211,8 @@ assign hit  = (valid && (tag_i == tag_lines[index_i]));
 /* output assignment */
 assign hit_o = hit;
 assign rdata_o = rdata[offset_i * WORD_WIDTH +: WORD_WIDTH];
-
+assign dirty_o = dirty;
+assign tag_o = tag_lines[index_i];
 /* instantiate cache lines */
 generate
     for (gen_i = 0; gen_i < LINE_NUM; gen_i = gen_i + 1) begin

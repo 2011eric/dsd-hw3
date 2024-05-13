@@ -3,7 +3,12 @@
 
 `timescale 1 ns/10 ps
 `define CYCLE       10.0                // Modify cycle time here
+
+`ifdef TWOWAY
+`define SDFFILE    "./cache_2way_syn.sdf"   // Modify your sdf file name
+`else
 `define SDFFILE    "./cache_dm_syn.sdf"   // Modify your sdf file name
+`endif
 
 `define OUTPUT_DELAY    0.3
 `define INPUT_DELAY     0.3
@@ -110,35 +115,35 @@ module tb_cache;
         proc_reset = 1'b0;
         #(`CYCLE*0.5 );
         
-        // $display( "Processor: Read initial data from memory." );
-        // // read sequentially from address 0 to address 1023
-        // local_miss = 0;
-        // stall_begin = 0;
-        // for( k=0; k<MEM_NUM*4; k=k) begin
-        //     #(`INPUT_DELAY);
-        //     proc_read = 1'b1;
-        //     proc_write = 1'b0;
-        //     proc_addr = k[29:0];
-        //     #(`CYCLE - `OUTPUT_DELAY - `INPUT_DELAY);
-        //     if (proc_stall && !stall_begin) begin
-        //         stall_begin = 1;
-        //         miss_cnt = miss_cnt + 1;
-        //         local_miss = local_miss + 1;
-        //     end
-        //     if( ~proc_stall ) begin
-        //         stall_begin = 0;
-        //         if( proc_rdata !== k[31:0] ) begin
-        //             error = error+1;
-        //             $display( "    Error: proc_addr=%d, data=%d, expected=%d.", proc_addr, proc_rdata, k[31:0] );
-        //         end
-        //         k = k+1;
-        //     end
-        //     #(`OUTPUT_DELAY);
-        // end
-        // if(error==0) $display( "    Done correctly so far! ^_^\n" );
-        // else         $display( "    Total %d errors detected so far! >\"<\n", error[14:0] );
-        // $display( "Miss rate of first stage: %f%%", local_miss/1024*100 );
-        // $display( "Processor: Write new data to memory." );
+        $display( "Processor: Read initial data from memory." );
+        // read sequentially from address 0 to address 1023
+        local_miss = 0;
+        stall_begin = 0;
+        for( k=0; k<MEM_NUM*4; k=k) begin
+            #(`INPUT_DELAY);
+            proc_read = 1'b1;
+            proc_write = 1'b0;
+            proc_addr = k[29:0];
+            #(`CYCLE - `OUTPUT_DELAY - `INPUT_DELAY);
+            if (proc_stall && !stall_begin) begin
+                stall_begin = 1;
+                miss_cnt = miss_cnt + 1;
+                local_miss = local_miss + 1;
+            end
+            if( ~proc_stall ) begin
+                stall_begin = 0;
+                if( proc_rdata !== k[31:0] ) begin
+                    error = error+1;
+                    $display( "    Error: proc_addr=%d, data=%d, expected=%d.", proc_addr, proc_rdata, k[31:0] );
+                end
+                k = k+1;
+            end
+            #(`OUTPUT_DELAY);
+        end
+        if(error==0) $display( "    Done correctly so far! ^_^\n" );
+        else         $display( "    Total %d errors detected so far! >\"<\n", error[14:0] );
+        $display( "Miss rate of first stage: %f%%", local_miss/1024*100 );
+        $display( "Processor: Write new data to memory." );
 
         local_miss = 0;
         stall_begin = 0;

@@ -1,7 +1,7 @@
 #You may modified the clock constraints 
 #or add more constraints for your design
 ####################################################
-set cycle  10      
+set cycle  2.5      
 ####################################################
 
 
@@ -21,7 +21,7 @@ set_operating_conditions -min_library fast -min fast -max_library slow -max slow
 set_wire_load_model -name tsmc13_wl10 -library slow  
 set_drive        1     [all_inputs]
 set_load         1     [all_outputs]
-set t_in   5.3
+set t_in   [expr $cycle / 2.0 + 0.3] 
 set t_out  1
 set_input_delay  $t_in  -clock CLK [remove_from_collection [all_inputs] [get_ports clk]]
 set_output_delay $t_out -clock CLK [all_outputs]

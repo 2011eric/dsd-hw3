@@ -182,15 +182,14 @@ always @(*) begin: replace
         replace_sel = 0;
     end else if(!valid_sets[1]) begin
         replace_sel = 1;
-    end else if (hit) begin
+    end else begin
         case (hit_tmp) 
             // select the set for read/write
             2'b01: replace_sel = 0;
             2'b10: replace_sel = 1;
+            2'b00: replace_sel = lru_lines_r[index_i];
         endcase
-    end else begin
-        replace_sel = lru_lines_r[index_i];
-    end
+    end 
 end
 always @(*) begin: set_control_signal
     for (i = 0; i < WAYS; i = i + 1) begin

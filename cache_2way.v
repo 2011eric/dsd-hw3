@@ -59,16 +59,15 @@ wire [1:0]              offset_i;
 
 reg  [1:0]              state_r, state_w;
 reg                     lru_lines_r [0:LINE_NUM-1], lru_lines_w   [0:LINE_NUM-1];      
-wire                    replace_sel;
+reg                    replace_sel;
 wire [WAYS-1:0]         hit_tmp;
 wire                    hit; // hit are ORed result from all the hit signal in each way
 wire                    dirty;
 reg                     stall;
 reg                     wen; // wen for cache set
 reg                     update;
-
 generate
-    for (gen_i = 0; gen_i < WAYS; gen_i = gen_i + 1)begin
+    for (gen_i = 0; gen_i < WAYS; gen_i = gen_i + 1)begin:gen_blk1
         set u0(
             .clk(clk),
             .rst(proc_reset),
@@ -91,24 +90,24 @@ endgenerate
 assign hit = |hit_tmp;
 assign index_i = proc_addr[4:2];
 assign offset_i = proc_addr[1:0];
-assign replace_sel = lru_lines_r[index_i];
 assign dirty = dirty_sets[replace_sel];
 assign input_src = (state_r == S_FETCH);
 
 /* memory control signal */
 assign mem_read = (state_r == S_FETCH);
 assign mem_write = (state_r == S_WB);
-assign mem_addr = (state_r == S_WB) ? {tag_sets[replace_sel], index_i ,2'b0} : {proc_addr[29:2], 2'b0};
-assign mem_wdata = rdata_sets[replace_sel];
+assign mem_addr = (state_r == S_WB) ? {tag_sets[replace_sel], index_i} : proc_addr[29:2];
+assign mem_wdata = (state_r == S_WB) ? rdata_sets[replace_sel] : 0;
 
 assign proc_stall = !(state_r == S_IDLE && hit);
-assign proc_rdata = rdata[WORD_WIDTH*index_i +: WORD_WIDTH];
+assign proc_rdata = rdata[WORD_WIDTH*offset_i +: WORD_WIDTH];
 always @(*) begin:state_logic
     state_w = state_r;
     update = 0;
     valid_next = 0;
     dirty_next = 0;
     wen = 0;
+    wdata = 0;
     for (i = 0; i < LINE_NUM; i = i + 1)
         lru_lines_w[i] = lru_lines_r[i];
     case (state_r)
@@ -124,7 +123,9 @@ always @(*) begin:state_logic
                     if (proc_write) begin
                         wen = 1;
                         update = 1;
+                        valid_next = 1;
                         dirty_next = 1;
+                        wdata = proc_wdata;
                     end
                     state_w = S_IDLE;
                 end
@@ -173,7 +174,17 @@ always @(*) begin:rdata_select
         2'b10: rdata = rdata_sets[1];
     endcase
 end
-
+always @(*) begin: replace
+    replace_sel = 0;
+    if (hit) begin
+        case (hit_tmp) 
+            2'b01: replace_sel = 0;
+            2'b10: replace_sel = 1;
+        endcase
+    end else begin
+        replace_sel = lru_lines_r[index_i];
+    end
+end
 always @(*) begin: set_control_signal
     for (i = 0; i < WAYS; i = i + 1) begin
         wen_sets[i] = (i == replace_sel) ? wen : 0;
@@ -203,7 +214,7 @@ endmodule
 module set #(
     parameter LINE_NUM = 8,
     parameter TAG_WIDTH = 25,
-    parameter BLOCK_WIDTH = 128,
+    parameter BLOCK_WIDTH = 128
 )(
     input clk,
     input rst,
@@ -213,7 +224,7 @@ module set #(
     input dirty_i,
     input input_src_i, // input_src_i = 0: CPU, 1: memory
     input [BLOCK_WIDTH-1:0] wdata_i,
-    input [29:0] addr_i;
+    input [29:0] addr_i,
     output        dirty_o,
     output        hit_o, 
     output [TAG_WIDTH-1:0] tag_o,
@@ -240,9 +251,9 @@ wire    [1:0]             offset;
 
 /* control signal for cache lines */
 reg                       wen_lines    [0:LINE_NUM-1]; // write enable signal for each line
-reg                       valid_next; // updated valid signal
-reg                       dirty_next; // updated dirty signal
-reg                       wdata;      // data written to cache line, the source could by CPU or memory
+wire                      valid_next; // updated valid signal
+wire                      dirty_next; // updated dirty signal
+reg     [BLOCK_WIDTH-1:0] wdata;      // data written to cache line, the source could by CPU or memory
 
 genvar gen_i;
 integer i;
@@ -260,13 +271,14 @@ assign dirty_o = dirty;
 assign tag_o = tag_lines[index_i];
 /* instantiate cache lines */
 generate
-    for (gen_i = 0; gen_i < LINE_NUM; gen_i = gen_i + 1) begin
+    for (gen_i = 0; gen_i < LINE_NUM; gen_i = gen_i + 1) begin:gen_blk2
         line l(
             .clk(clk),
             .rst(rst),
             .write_i(wen_lines[gen_i]),
             .valid_i(valid_next),
             .dirty_i(dirty_next),
+            .tag_i(tag_i),
             .wdata_i(wdata),
             .valid_o(valid_lines[gen_i]),
             .dirty_o(dirty_lines[gen_i]),
@@ -315,11 +327,12 @@ module line #(
     input write_i,
     input valid_i,
     input dirty_i,
+    input [TAG_WIDTH-1:0] tag_i,
     input [BLOCK_WIDTH-1:0] wdata_i,
     output valid_o,
     output dirty_o,
     output [24:0] tag_o,
-    output [WORD_WIDTH-1:0] rdata_o
+    output [BLOCK_WIDTH-1:0] rdata_o
 );
 
 integer i;
@@ -332,7 +345,7 @@ reg [BLOCK_WIDTH-1:0]  data_r, data_w;
 assign valid_o = valid_r;
 assign dirty_o = dirty_r;
 assign tag_o = tag_r;
-assign data_o = data_r[offset_i];
+assign rdata_o = data_r;
 
 always @(*) begin:update_logic
     if (write_i) begin
@@ -353,12 +366,12 @@ always @(posedge clk) begin
         valid_r <= 0;
         dirty_r <= 0;
         tag_r <= 0;
-        data_r[i] <= 0;
+        data_r <= 0;
     end else begin
         valid_r <= valid_w;
         dirty_r <= dirty_w;
         tag_r <= tag_w;
-        data_r[i] <= data_w[i];
+        data_r <= data_w;
     end
 end
 endmodule

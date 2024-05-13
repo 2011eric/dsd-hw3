@@ -53,7 +53,7 @@ reg                     valid_next; // updated valid bit
 reg                     dirty_next; // updated dirty bit
 wire                    input_src; // input source, 0: CPU, 1: memory
 reg  [BLOCK_WIDTH-1:0]  wdata;      // data written to cache line
-reg  [BLOCK_WIDTH-1:0]  rdata;      
+wire [BLOCK_WIDTH-1:0]  rdata;      
 
 wire [1:0]              index_i;
 wire [1:0]              offset_i;
@@ -168,28 +168,30 @@ always @(*) begin:state_logic
     endcase
 end
 
+generate 
+    for (gen_i = 0;gen_i < BLOCK_WIDTH; gen_i = gen_i + 1) begin:gen_blk3
+        assign rdata[gen_i] = rdata_sets[0][gen_i] & hit_sets[0] | rdata_sets[1][gen_i] & hit_sets[1];
+    end
+endgenerate
 
-always @(*) begin:rdata_select
-    rdata = 0;
-    case (hit_tmp) 
-        2'b01: rdata = rdata_sets[0];
-        2'b10: rdata = rdata_sets[1];
-    endcase
-end
+// always @(*) begin:rdata_select
+//     rdata = rdata_sets[0];
+//     case (hit_tmp) 
+//         2'b01: rdata = rdata_sets[0];
+//         2'b10: rdata = rdata_sets[1];
+//     endcase
+// end
 always @(*) begin: replace
     replace_sel = 0;
     if (!valid_sets[0]) begin
         replace_sel = 0;
     end else if(!valid_sets[1]) begin
         replace_sel = 1;
+    end else if (hit) begin
+        replace_sel = hit_sets[1];
     end else begin
-        case (hit_tmp) 
-            // select the set for read/write
-            2'b01: replace_sel = 0;
-            2'b10: replace_sel = 1;
-            2'b00: replace_sel = lru_lines_r[index_i];
-        endcase
-    end 
+        replace_sel = lru_lines_r[index_i];
+    end
 end
 always @(*) begin: set_control_signal
     for (i = 0; i < WAYS; i = i + 1) begin

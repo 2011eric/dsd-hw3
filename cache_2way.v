@@ -47,89 +47,25 @@ reg                     update_sets [0:WAYS-1]; // updated valid signal
 wire                    hit_sets    [0:WAYS-1];
 wire                    dirty_sets    [0:WAYS-1];
 wire [TAG_WIDTH-1:0]    tag_sets    [0:WAYS-1];
-wire [WORD_WIDTH-1:0]   rdata_sets  [0:WAYS-1];
+wire [BLOCK_WIDTH-1:0]  rdata_sets  [0:WAYS-1]; // 128 bit 
 reg                     valid_next; // updated valid bit
 reg                     dirty_next; // updated dirty bit
-reg                     input_src; // input source, 0: CPU, 1: memory
+wire                    input_src; // input source, 0: CPU, 1: memory
 reg  [BLOCK_WIDTH-1:0]  wdata;      // data written to cache line
 reg  [BLOCK_WIDTH-1:0]  rdata;      
 
-wire [2:0]                   index_i;
+wire [2:0]              index_i;
+wire [1:0]              offset_i;
+
 reg  [1:0]              state_r, state_w;
 reg                     lru_lines_r [0:LINE_NUM-1], lru_lines_w   [0:LINE_NUM-1];      
 wire                    replace_sel;
 wire [WAYS-1:0]         hit_tmp;
 wire                    hit; // hit are ORed result from all the hit signal in each way
 wire                    dirty;
-//==== combinational circuit ==============================
-assign hit = |hit_tmp;
-assign index_i = proc_addr[4:2];
-assign replace_sel = lru_lines_r[index_i];
-assign dirty = dirty_sets[replace_sel];
-
-/* memory control signal */
-assign mem_read = (state_r == S_FETCH);
-assign mem_write = (state_r == S_WB);
-assign mem_addr = (state_r == S_WB) ? {tag_sets[replace_sel], index_i ,2'b0} : {proc_addr[29:2], 2'b0};
-
-always @(*) begin:state_logic
-    state_w = state_r
-    case (state_r)
-        S_IDLE: begin
-            if (proc_read || proc_write) begin
-                if (!hit) begin
-                    if (dirty) 
-                        state_w = S_WB;
-                    else
-                        state_w = S_FETCH;
-                end else begin
-                    state_w = S_IDLE;
-                end
-            end else begin
-                state_w = S_IDLE;
-            end
-        end
-        S_WB: begin
-            if (mem_ready) begin
-                state_w = S_FETCH;
-            end else begin
-                state_w = S_WB;
-            end
-        end
-        S_FETCH: begin
-
-        end
-    endcase
-
-
-end
-
-
-always @(*) begin:rdata_select
-    rdata = 0;
-    case (hit_tmp) 
-        2'b01: begin
-            rdata = rdata_sets[0];
-        2'b10: rdata = rdata_sets[1];
-    endcase
-end
-//TODO: change cache line output data width to 128 bit
-/* output signals */
-assign proc_rdata = rdata;
-//==== sequential circuit =================================
-always @(posedge clk) begin
-    if (proc_reset) begin
-        state_r <= S_IDLE;
-        for (i = 0;i < LINE_NUM; i = i + 1) begin
-            lru_lines_r[i] <= 0;
-        end
-    end else begin
-        state_r <= state_w;
-        for (i = 0;i < LINE_NUM; i = i + 1) begin
-            lru_lines_r[i] <= lru_lines_w[i];
-        end
-    end
-end
+reg                     stall;
+reg                     wen; // wen for cache set
+reg                     update;
 
 generate
     for (gen_i = 0; gen_i < WAYS; gen_i = gen_i + 1)begin
@@ -151,6 +87,116 @@ generate
         assign hit_tmp[gen_i] = hit_sets[gen_i];
     end
 endgenerate
+//==== combinational circuit ==============================
+assign hit = |hit_tmp;
+assign index_i = proc_addr[4:2];
+assign offset_i = proc_addr[1:0];
+assign replace_sel = lru_lines_r[index_i];
+assign dirty = dirty_sets[replace_sel];
+assign input_src = (state_r == S_FETCH);
+
+/* memory control signal */
+assign mem_read = (state_r == S_FETCH);
+assign mem_write = (state_r == S_WB);
+assign mem_addr = (state_r == S_WB) ? {tag_sets[replace_sel], index_i ,2'b0} : {proc_addr[29:2], 2'b0};
+assign mem_wdata = rdata_sets[replace_sel];
+
+assign proc_stall = !(state_r == S_IDLE && hit);
+assign proc_rdata = rdata[WORD_WIDTH*index_i +: WORD_WIDTH];
+always @(*) begin:state_logic
+    state_w = state_r;
+    update = 0;
+    valid_next = 0;
+    dirty_next = 0;
+    wen = 0;
+    for (i = 0; i < LINE_NUM; i = i + 1)
+        lru_lines_w[i] = lru_lines_r[i];
+    case (state_r)
+        S_IDLE: begin
+            if (proc_read || proc_write) begin
+                if (!hit) begin
+                    if (dirty) 
+                        state_w = S_WB;
+                    else
+                        state_w = S_FETCH;
+                end else begin
+                    lru_lines_w[index_i] = ~lru_lines_r[index_i];
+                    if (proc_write) begin
+                        wen = 1;
+                        update = 1;
+                        dirty_next = 1;
+                    end
+                    state_w = S_IDLE;
+                end
+            end else begin
+                state_w = S_IDLE;
+            end
+        end
+        S_WB: begin
+            if (mem_ready) begin
+                state_w = S_FETCH;
+            end else begin
+                state_w = S_WB;
+            end
+        end
+        S_FETCH: begin
+            if (mem_ready) begin
+                lru_lines_w[index_i] = ~lru_lines_r[index_i];
+                state_w = S_IDLE;
+                wen = 1;
+                update = 1;
+                valid_next = 1;
+                if (proc_write) begin // here we fetch from memory and perform write operation at the same time
+                    dirty_next = 1;
+                    case (offset_i)
+                        2'b00: wdata = {mem_rdata[127:32], proc_wdata[31:0]};
+                        2'b01: wdata = {mem_rdata[127:64], proc_wdata[31:0], mem_rdata[31:0]};
+                        2'b10: wdata = {mem_rdata[127:95], proc_wdata[31:0], mem_rdata[63:0]};
+                        2'b11: wdata = {proc_wdata, mem_rdata[95:0]};
+                    endcase
+                end else begin
+                    wdata = mem_rdata;
+                    dirty_next = 0;
+                end
+            end else begin
+                state_w = S_FETCH;
+            end
+        end
+    endcase
+end
+
+
+always @(*) begin:rdata_select
+    rdata = 0;
+    case (hit_tmp) 
+        2'b01: rdata = rdata_sets[0];
+        2'b10: rdata = rdata_sets[1];
+    endcase
+end
+
+always @(*) begin: set_control_signal
+    for (i = 0; i < WAYS; i = i + 1) begin
+        wen_sets[i] = (i == replace_sel) ? wen : 0;
+        update_sets[i] = (i == replace_sel) ? update : 0;
+    end
+end
+
+//==== sequential circuit =================================
+always @(posedge clk) begin
+    if (proc_reset) begin
+        state_r <= S_IDLE;
+        for (i = 0;i < LINE_NUM; i = i + 1) begin
+            lru_lines_r[i] <= 0;
+        end
+    end else begin
+        state_r <= state_w;
+        for (i = 0;i < LINE_NUM; i = i + 1) begin
+            lru_lines_r[i] <= lru_lines_w[i];
+        end
+    end
+end
+
+
 
 endmodule
 
@@ -158,7 +204,6 @@ module set #(
     parameter LINE_NUM = 8,
     parameter TAG_WIDTH = 25,
     parameter BLOCK_WIDTH = 128,
-    parameter WORD_WIDTH = 32
 )(
     input clk,
     input rst,
@@ -172,7 +217,7 @@ module set #(
     output        dirty_o,
     output        hit_o, 
     output [TAG_WIDTH-1:0] tag_o,
-    output [WORD_WIDTH-1:0] rdata_o
+    output [BLOCK_WIDTH-1:0] rdata_o
 );
 
 /* data read from cache line */
@@ -210,7 +255,7 @@ assign hit  = (valid && (tag_i == tag_lines[index_i]));
 
 /* output assignment */
 assign hit_o = hit;
-assign rdata_o = rdata[offset_i * WORD_WIDTH +: WORD_WIDTH];
+assign rdata_o = rdata;
 assign dirty_o = dirty;
 assign tag_o = tag_lines[index_i];
 /* instantiate cache lines */

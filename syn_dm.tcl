@@ -1,5 +1,5 @@
 
-set DESIGN cache_2way
+set DESIGN cache_dm
 sh mkdir -p work
 sh mkdir -p report
 

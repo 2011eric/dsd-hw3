@@ -34,9 +34,9 @@ module cache(
 //==== parameter definition ===============================
 parameter WAYS = 2;    
 parameter BLOCK_WIDTH = 128;
-parameter TAG_WIDTH = 25;
+parameter TAG_WIDTH = 26;
 parameter WORD_WIDTH = 32;
-parameter LINE_NUM = 8;
+parameter LINE_NUM = 4;
 localparam S_IDLE = 0, S_WB = 1, S_FETCH = 2;
 
 genvar gen_i;
@@ -44,6 +44,7 @@ integer i;
 //==== wire/reg definition ================================
 reg                     wen_sets    [0:WAYS-1]; // write enable signal for each set
 reg                     update_sets [0:WAYS-1]; // updated valid signal
+wire                    valid_sets    [0:WAYS-1];
 wire                    hit_sets    [0:WAYS-1];
 wire                    dirty_sets    [0:WAYS-1];
 wire [TAG_WIDTH-1:0]    tag_sets    [0:WAYS-1];
@@ -54,7 +55,7 @@ wire                    input_src; // input source, 0: CPU, 1: memory
 reg  [BLOCK_WIDTH-1:0]  wdata;      // data written to cache line
 reg  [BLOCK_WIDTH-1:0]  rdata;      
 
-wire [2:0]              index_i;
+wire [1:0]              index_i;
 wire [1:0]              offset_i;
 
 reg  [1:0]              state_r, state_w;
@@ -79,6 +80,7 @@ generate
             .wdata_i(wdata),
             .addr_i(proc_addr),
             .dirty_o(dirty_sets[gen_i]),
+            .valid_o(valid_sets[gen_i]),
             .hit_o(hit_sets[gen_i]),
             .tag_o(tag_sets[gen_i]),
             .rdata_o(rdata_sets[gen_i])
@@ -88,7 +90,7 @@ generate
 endgenerate
 //==== combinational circuit ==============================
 assign hit = |hit_tmp;
-assign index_i = proc_addr[4:2];
+assign index_i = proc_addr[3:2];
 assign offset_i = proc_addr[1:0];
 assign dirty = dirty_sets[replace_sel];
 assign input_src = (state_r == S_FETCH);
@@ -119,7 +121,7 @@ always @(*) begin:state_logic
                     else
                         state_w = S_FETCH;
                 end else begin
-                    lru_lines_w[index_i] = ~lru_lines_r[index_i];
+                    lru_lines_w[index_i] = ~replace_sel;
                     if (proc_write) begin
                         wen = 1;
                         update = 1;
@@ -142,7 +144,7 @@ always @(*) begin:state_logic
         end
         S_FETCH: begin
             if (mem_ready) begin
-                lru_lines_w[index_i] = ~lru_lines_r[index_i];
+                lru_lines_w[index_i] = ~replace_sel;
                 state_w = S_IDLE;
                 wen = 1;
                 update = 1;
@@ -176,8 +178,13 @@ always @(*) begin:rdata_select
 end
 always @(*) begin: replace
     replace_sel = 0;
-    if (hit) begin
+    if (!valid_sets[0]) begin
+        replace_sel = 0;
+    end else if(!valid_sets[1]) begin
+        replace_sel = 1;
+    end else if (hit) begin
         case (hit_tmp) 
+            // select the set for read/write
             2'b01: replace_sel = 0;
             2'b10: replace_sel = 1;
         endcase
@@ -212,8 +219,8 @@ end
 endmodule
 
 module set #(
-    parameter LINE_NUM = 8,
-    parameter TAG_WIDTH = 25,
+    parameter LINE_NUM = 4,
+    parameter TAG_WIDTH = 26,
     parameter BLOCK_WIDTH = 128
 )(
     input clk,
@@ -225,6 +232,7 @@ module set #(
     input input_src_i, // input_src_i = 0: CPU, 1: memory
     input [BLOCK_WIDTH-1:0] wdata_i,
     input [29:0] addr_i,
+    output        valid_o,
     output        dirty_o,
     output        hit_o, 
     output [TAG_WIDTH-1:0] tag_o,
@@ -238,8 +246,8 @@ wire    [TAG_WIDTH-1:0]   tag_lines   [0:LINE_NUM-1];
 wire    [BLOCK_WIDTH-1:0] rdata_lines [0:LINE_NUM-1];
 
 /* information from input addr */
-wire    [24:0]            tag_i;
-wire    [2:0]             index_i;
+wire    [TAG_WIDTH-1:0]            tag_i;
+wire    [1:0]             index_i;
 wire    [1:0]             offset_i;
 
 /* generate signal */
@@ -265,6 +273,7 @@ assign rdata  = rdata_lines[index_i];
 assign hit  = (valid && (tag_i == tag_lines[index_i]));
 
 /* output assignment */
+assign valid_o = valid;
 assign hit_o = hit;
 assign rdata_o = rdata;
 assign dirty_o = dirty;
@@ -318,7 +327,7 @@ assign dirty_next = (update_i) ? dirty_i : dirty;
 endmodule
 
 module line #(
-    parameter TAG_WIDTH = 25,
+    parameter TAG_WIDTH = 26,
     parameter BLOCK_WIDTH = 128,
     parameter WORD_WIDTH = 32
 )(
@@ -331,7 +340,7 @@ module line #(
     input [BLOCK_WIDTH-1:0] wdata_i,
     output valid_o,
     output dirty_o,
-    output [24:0] tag_o,
+    output [TAG_WIDTH-1:0] tag_o,
     output [BLOCK_WIDTH-1:0] rdata_o
 );
 

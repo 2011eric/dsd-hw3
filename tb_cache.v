@@ -38,6 +38,8 @@ module tb_cache;
     integer stall_begin;
     real miss_cnt;
     real local_miss;
+    real stall_cycle;
+    real total_cycle;
     
     memory u_mem (
         .clk        (clk)       ,
@@ -114,7 +116,8 @@ module tb_cache;
         #(`CYCLE*4 );
         proc_reset = 1'b0;
         #(`CYCLE*0.5 );
-        
+        stall_cycle = 0;
+        total_cycle = 0;
         $display( "Processor: Read initial data from memory." );
         // read sequentially from address 0 to address 1023
         local_miss = 0;
@@ -137,12 +140,16 @@ module tb_cache;
                     $display( "    Error: proc_addr=%d, data=%d, expected=%d.", proc_addr, proc_rdata, k[31:0] );
                 end
                 k = k+1;
+            end else begin
+                stall_cycle = stall_cycle + 1;
             end
+            total_cycle = total_cycle + 1;
             #(`OUTPUT_DELAY);
         end
         if(error==0) $display( "    Done correctly so far! ^_^\n" );
         else         $display( "    Total %d errors detected so far! >\"<\n", error[14:0] );
         $display( "Miss rate of first stage: %f%%", local_miss/1024*100 );
+        $display("Total Cycle: %d, Total stalled cycle so far: %d\n", total_cycle ,stall_cycle);
         $display( "Processor: Write new data to memory." );
 
         local_miss = 0;
@@ -163,11 +170,15 @@ module tb_cache;
             if( ~proc_stall ) begin
                 k = k+1;
                 stall_begin = 0;
+            end else begin
+                stall_cycle = stall_cycle + 1;
             end
+            total_cycle = total_cycle + 1;
             #(`OUTPUT_DELAY);
         end
         $display( "    Finish writing!\n" );
         $display( "Miss rate of second stage: %f%%", local_miss/1024*100 );
+        $display("Total Cycle: %d, Total stalled cycle so far: %d\n", total_cycle ,stall_cycle);
         $display( "Processor: Read new data from memory." );
         // read the first 64 addresses in the order of 0, 32, 1, 33, 2, 34, ..., 30, 62, 31, 63
         // read the next 64 addresses in the order of 64, 96, 65, 97, 66, 98, ..., 94, 126, 95, 127 
@@ -194,6 +205,7 @@ module tb_cache;
                     miss_cnt = miss_cnt + 1;
                     local_miss = local_miss + 1;
                 end
+                total_cycle = total_cycle + 1;
                 if( ~proc_stall ) begin
                     stall_begin = 0;
                     h = k*3+1;
@@ -202,19 +214,23 @@ module tb_cache;
                         $display( "    Error: proc_addr=%d, data=%d, expected=%d.", proc_addr, proc_rdata, h[31:0] );
                     end
                     #(`OUTPUT_DELAY) y = y+1;
+                end 
+                else begin
+                    stall_cycle = stall_cycle + 1;
+                    #(`OUTPUT_DELAY);
                 end
-                else #(`OUTPUT_DELAY);
             end
         end
         if(error==0) $display( "    Done correctly so far! ^_^ \n" );
         else         $display( "    Total %d errors detected so far! >\"< \n", error[14:0] );
         $display("Miss rate at the third stage is: %f%%", local_miss/1024*100);
-
+        $display("Total Cycle: %d, Total stalled cycle so far: %d\n", total_cycle ,stall_cycle);
         #(`CYCLE*4);
         if( error != 0 ) $display( "==== SORRY! There are %d errors. ====\n", error[14:0] );
         else $display( "==== CONGRATULATIONS! Pass cache read-write-read test. ====\n" );
         $display( "Finished all operations at:  ", $time, " ns" );
         $display( "Total rate is: %f%%", miss_cnt/(1024*3)*100 );
+        $display( "Total cycle is: %d", total_cycle );
         #(`CYCLE * 10 );
         $display( "Exit testbench simulation at:", $time, " ns" );
         $display( "\n" );
